@@ -489,16 +489,24 @@ async function updateRoute() {
             .bindPopup('End: ' + endAddress)
             .addTo(map);
 
-        // Create new routing control with OSRM configuration
-        routingControl = L.Routing.control({
+        // Create new routing control
+        const routeControl = L.Routing.control({
             waypoints: [
                 L.latLng(startPoint[0], startPoint[1]),
                 L.latLng(endPoint[0], endPoint[1])
             ],
-            router: new L.Routing.OSRMv1({
+            router: L.Routing.osrmv1({
                 serviceUrl: 'https://router.project-osrm.org/route/v1',
                 profile: 'driving',
-                numberOfAlternatives: 2
+                alternatives: true
+            }),
+            plan: L.Routing.plan([
+                L.latLng(startPoint[0], startPoint[1]),
+                L.latLng(endPoint[0], endPoint[1])
+            ], {
+                createMarker: function() { return null; },
+                draggableWaypoints: false,
+                addWaypoints: false
             }),
             show: false,
             showAlternatives: true,
@@ -512,17 +520,25 @@ async function updateRoute() {
                     {color: '#ff0000', opacity: 0.6, weight: 6}   // Red for second alternative
                 ]
             },
-            createMarker: function() { return null; },
-            fitSelectedRoutes: true
-        }).addTo(map);
+            fitSelectedRoutes: true,
+            useZoomParameter: false,
+            routeWhileDragging: false,
+            createMarker: function() { return null; }
+        });
 
-        // Set up route found event handler with improved error checking
+        // Add the control to the map
+        routeControl.addTo(map);
+        routingControl = routeControl;
+
+        // Set up route found event handler
         routingControl.on('routesfound', function(e) {
             if (!e || !e.routes || !e.routes[0]) {
                 document.querySelector('#route-info .route-details').innerHTML = 
                     `<p style="color: red;">Error: No valid route found</p>`;
                 return;
             }
+
+            console.log('Routes found:', e.routes); // Debug logging
 
             const mainRoute = e.routes[0];
             const alternatives = e.routes.slice(1);
@@ -544,17 +560,14 @@ async function updateRoute() {
             const tollInfo = checkForTolls(mainRoute);
             const trafficInfo = checkTrafficConditions(mainRoute);
 
-            // Create colored route segments based on traffic for main route
-            createTrafficColoredRoute(mainRoute);
-            
-            // Generate a legend for the routes
+            // Generate HTML for route information with legend
             let routeInfo = `
-                <div class="main-route">
-                    <div class="route-legend">
-                        <span class="route-color" style="background: #0073FF"></span>
-                        <strong>Main Route:</strong> ${distanceMiles} mi (${time} min)
-                    </div>`;
+                <div class="route-legend">
+                    <span class="route-color" style="background: #0073FF"></span>
+                    <strong>Main Route:</strong> ${distanceMiles} mi (${time} min)
+                </div>`;
             
+            // Add alternative routes to the legend if they exist
             alternatives.forEach((route, index) => {
                 const altDistanceKm = (route.summary.totalDistance / 1000).toFixed(1);
                 const altDistanceMiles = (altDistanceKm * 0.621371).toFixed(1);
@@ -568,9 +581,7 @@ async function updateRoute() {
                     </div>`;
             });
             
-            routeInfo += '</div>';
-            
-            // Update route information
+            // Update the route information panel
             document.querySelector('#route-info .route-details').innerHTML = routeInfo;
 
             // Update toll information
@@ -591,7 +602,7 @@ async function updateRoute() {
                 '<p>No significant traffic on this route</p>';
         });
 
-        // Handle routing errors with more detail
+        // Handle routing errors
         routingControl.on('routingerror', function(e) {
             console.error('Routing error:', e);
             document.querySelector('#route-info .route-details').innerHTML = 
