@@ -1,19 +1,6 @@
 // Initialize map centered on Dallas area
 const map = L.map('map').setView([32.7767, -96.7970], 11);
 
-// Add OpenStreetMap tiles
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '© OpenStreetMap contributors'
-}).addTo(map);
-
-// Initialize controls and markers
-let routingControl = null;
-let startMarker = null;
-let endMarker = null;
-let tollMarkers = [];
-let trafficLayers = [];
-
 // Dallas area toll roads data
 const dallasAreaTolls = [
     {
@@ -65,6 +52,249 @@ const redIcon = new L.Icon({
     shadowSize: [41, 41]
 });
 
+// Initialize controls and markers
+let routingControl = null;
+let startMarker = null;
+let endMarker = null;
+let tollMarkers = [];
+let trafficLayers = [];
+
+// Add OpenStreetMap tiles
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '© OpenStreetMap contributors'
+}).addTo(map);
+
+// Initialize marker clusters
+const poiLayers = L.markerClusterGroup({
+    showCoverageOnHover: false,
+    spiderfyOnMaxZoom: true,
+    disableClusteringAtZoom: 18,
+    maxClusterRadius: 50,
+    iconCreateFunction: function(cluster) {
+        const childCount = cluster.getChildCount();
+        return L.divIcon({
+            html: `<div class="cluster-icon">👥${childCount}</div>`,
+            className: 'marker-cluster',
+            iconSize: L.point(40, 40)
+        });
+    }
+}).addTo(map);
+
+// Constants
+const MIN_ZOOM_FOR_POIS = 15; // Only show POIs when zoomed in this far
+
+// POI categories with icons
+const poiCategories = {
+    restaurant: { icon: '🍴', name: 'Restaurants', color: '#ff7675' },
+    cafe: { icon: '☕', name: 'Cafes', color: '#fab1a0' },
+    fast_food: { icon: '🍔', name: 'Fast Food', color: '#ffeaa7' },
+    bar: { icon: '🍺', name: 'Bars', color: '#fdcb6e' },
+    hotel: { icon: '🏨', name: 'Hotels', color: '#74b9ff' },
+    supermarket: { icon: '🏪', name: 'Supermarkets', color: '#55efc4' },
+    parking: { icon: '🅿️', name: 'Parking', color: '#a8e6cf' },
+    gas_station: { icon: '⛽', name: 'Gas Stations', color: '#dfe6e9' }
+};
+
+let poiControl = null;
+
+// Function to fetch POIs from Overpass API
+async function fetchPOIs(bounds, category) {
+    const query = `
+        [out:json][timeout:25];
+        (
+            node["amenity"="${category}"](${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});
+            way["amenity"="${category}"](${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});
+            relation["amenity"="${category}"](${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()});
+        );
+        out body;
+        >;
+        out skel qt;
+    `;
+
+    try {
+        const response = await fetch('https://overpass-api.de/api/interpreter', {
+            method: 'POST',
+            body: query
+        });
+        const data = await response.json();
+        return data.elements;
+    } catch (error) {
+        console.error('Error fetching POIs:', error);
+        return [];
+    }
+}
+
+// Function to update POIs on the map
+async function updatePOIs() {
+    const currentZoom = map.getZoom();
+    poiLayers.clearLayers();
+    
+    // Only show POIs if zoomed in enough
+    if (currentZoom < MIN_ZOOM_FOR_POIS) {
+        document.querySelector('.poi-control').classList.add('poi-control-disabled');
+        document.querySelector('.zoom-hint').style.display = 'block';
+        return;
+    }
+
+    document.querySelector('.poi-control').classList.remove('poi-control-disabled');
+    document.querySelector('.zoom-hint').style.display = 'none';
+    
+    const bounds = map.getBounds();
+    const visibleCategories = document.querySelectorAll('.poi-checkbox:checked');
+    
+    for (const checkbox of visibleCategories) {
+        const category = checkbox.value;
+        const pois = await fetchPOIs(bounds, category);
+        const categoryInfo = poiCategories[category];
+        
+        pois.forEach(poi => {
+            if (poi.lat && poi.lon) {
+                const marker = L.marker([poi.lat, poi.lon], {
+                    icon: L.divIcon({
+                        className: `poi-marker ${category}-marker`,
+                        html: `<div class="emoji-marker" style="background-color: ${categoryInfo.color}">${categoryInfo.icon}</div>`,
+                        iconSize: [32, 32],
+                        iconAnchor: [16, 16],
+                        popupAnchor: [0, -16]
+                    })
+                });
+                
+                const name = poi.tags.name || categoryInfo.name;
+                const address = poi.tags['addr:street'] ? 
+                    `${poi.tags['addr:housenumber'] || ''} ${poi.tags['addr:street'] || ''}` : '';
+                
+                marker.bindPopup(`
+                    <strong>${name}</strong><br>
+                    ${address}<br>
+                    ${categoryInfo.icon} ${category.charAt(0).toUpperCase() + category.slice(1)}
+                `);
+                
+                poiLayers.addLayer(marker);
+            }
+        });
+    }
+}
+
+// Add POI controls to the map
+function addPOIControls() {
+    if (poiControl) {
+        poiControl.remove();
+    }
+
+    const poiDiv = L.DomUtil.create('div', 'poi-control');
+    poiDiv.innerHTML = `
+        <h4>Places of Interest</h4>
+        <div class="zoom-hint">Zoom in to see places</div>
+        ${Object.entries(poiCategories).map(([category, info]) => `
+            <label>
+                <input type="checkbox" class="poi-checkbox" value="${category}">
+                <span class="poi-icon" style="background-color: ${info.color}20">${info.icon}</span>
+                ${info.name}
+            </label>
+        `).join('')}
+    `;
+
+    poiControl = L.control({ position: 'topright' });
+    poiControl.onAdd = function() {
+        return poiDiv;
+    };
+    poiControl.addTo(map);
+
+    // Add event listeners to checkboxes
+    poiDiv.querySelectorAll('.poi-checkbox').forEach(checkbox => {
+        checkbox.addEventListener('change', updatePOIs);
+    });
+}
+
+// Initialize POI controls
+addPOIControls();
+
+// Add event listeners for map movement and zoom
+map.on('moveend zoomend', updatePOIs);
+
+// Theme management
+function initializeTheme() {
+    const savedColor = localStorage.getItem('backgroundColor') || '#ffffff';
+    document.body.style.backgroundColor = savedColor;
+    document.getElementById('background-color').value = savedColor;
+}
+
+function updateBackgroundColor(event) {
+    const color = event.target.value;
+    document.body.style.backgroundColor = color;
+    localStorage.setItem('backgroundColor', color);
+}
+
+function resetTheme() {
+    const defaultColor = '#ffffff';
+    document.body.style.backgroundColor = defaultColor;
+    document.getElementById('background-color').value = defaultColor;
+    localStorage.setItem('backgroundColor', defaultColor);
+}
+
+// Draggable directions panel functionality
+function initializeDraggableDirections() {
+    const directionsContainer = document.getElementById('directions-container');
+    const dragHandle = directionsContainer.querySelector('.drag-handle');
+    let isDragging = false;
+    let currentX;
+    let currentY;
+    let initialX;
+    let initialY;
+    let xOffset = 0;
+    let yOffset = 0;
+
+    dragHandle.addEventListener('mousedown', dragStart);
+    document.addEventListener('mousemove', drag);
+    document.addEventListener('mouseup', dragEnd);
+
+    function dragStart(e) {
+        initialX = e.clientX - xOffset;
+        initialY = e.clientY - yOffset;
+
+        if (e.target === dragHandle || e.target.parentNode === dragHandle) {
+            isDragging = true;
+        }
+    }
+
+    function drag(e) {
+        if (isDragging) {
+            e.preventDefault();
+            currentX = e.clientX - initialX;
+            currentY = e.clientY - initialY;
+
+            xOffset = currentX;
+            yOffset = currentY;
+
+            setTranslate(currentX, currentY, directionsContainer);
+        }
+    }
+
+    function dragEnd(e) {
+        initialX = currentX;
+        initialY = currentY;
+        isDragging = false;
+    }
+
+    function setTranslate(xPos, yPos, el) {
+        el.style.transform = `translate(${xPos}px, ${yPos}px)`;
+    }
+}
+
+function toggleDirections() {
+    const container = document.getElementById('directions-container');
+    container.classList.toggle('minimized');
+}
+
+// Add event listeners for theme controls and draggable directions
+document.addEventListener('DOMContentLoaded', function() {
+    initializeTheme();
+    document.getElementById('background-color').addEventListener('input', updateBackgroundColor);
+    initializeDraggableDirections();
+});
+
+// Function to fetch coordinates for an address
 async function geocodeAddress(address) {
     const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}`);
     const data = await response.json();
@@ -228,6 +458,10 @@ async function updateRoute() {
         const startAddress = document.getElementById('start-address').value;
         const endAddress = document.getElementById('end-address').value;
 
+        // Show loading state
+        document.querySelector('#route-info .route-details').innerHTML = 
+            `<p>Calculating route from ${startAddress} to ${endAddress}...</p>`;
+
         // Clear existing markers and routes
         if (startMarker) map.removeLayer(startMarker);
         if (endMarker) map.removeLayer(endMarker);
@@ -243,6 +477,9 @@ async function updateRoute() {
         const startPoint = await geocodeAddress(startAddress);
         const endPoint = await geocodeAddress(endAddress);
 
+        console.log('Start point:', startPoint);
+        console.log('End point:', endPoint);
+
         // Add colored markers
         startMarker = L.marker(startPoint, {icon: greenIcon})
             .bindPopup('Start: ' + startAddress)
@@ -252,7 +489,7 @@ async function updateRoute() {
             .bindPopup('End: ' + endAddress)
             .addTo(map);
 
-        // Create new routing control without visible lines
+        // Create new routing control with OSRM configuration
         routingControl = L.Routing.control({
             waypoints: [
                 L.latLng(startPoint[0], startPoint[1]),
@@ -260,27 +497,44 @@ async function updateRoute() {
             ],
             router: new L.Routing.OSRMv1({
                 serviceUrl: 'https://router.project-osrm.org/route/v1',
-                profile: 'driving'
+                profile: 'driving',
+                timeout: 30000,
+                geometryOnly: false
             }),
+            useZoomParameter: true,
             routeWhileDragging: false,
             showAlternatives: false,
+            fitSelectedRoutes: 'smart',
+            show: false,
             lineOptions: {
                 styles: [
-                    {color: 'transparent', opacity: 0, weight: 0}
+                    {color: '#0073FF', opacity: 0.8, weight: 6}
                 ]
             },
-            createMarker: function() { return null; },
-            addWaypoints: false
+            createMarker: function() { return null; }
         });
 
+        // Add the control to the map and force route calculation
         routingControl.addTo(map);
-
-        // Update route info when route is found
+        
+        // Set up route found event handler with improved error checking
         routingControl.on('routesfound', function(e) {
+            if (!e || !e.routes || !e.routes[0]) {
+                document.querySelector('#route-info .route-details').innerHTML = 
+                    `<p style="color: red;">Error: No valid route found</p>`;
+                return;
+            }
+
             const route = e.routes[0];
-            const bounds = L.latLngBounds([startPoint, endPoint]);
-            map.fitBounds(bounds, { padding: [50, 50] });
+            console.log('Route details:', route);
             
+            // Fit the map to show the whole route
+            if (route.coordinates && route.coordinates.length > 0) {
+                const bounds = L.latLngBounds(route.coordinates);
+                map.fitBounds(bounds, { padding: [50, 50] });
+            }
+            
+            // Calculate route information
             const distanceKm = (route.summary.totalDistance / 1000).toFixed(1);
             const distanceMiles = (distanceKm * 0.621371).toFixed(1);
             const time = Math.round(route.summary.totalTime / 60);
@@ -317,7 +571,16 @@ async function updateRoute() {
                      </li>`).join('')}</ul>` :
                 '<p>No significant traffic on this route</p>';
         });
+
+        // Handle routing errors with more detail
+        routingControl.on('routingerror', function(e) {
+            console.error('Routing error:', e);
+            document.querySelector('#route-info .route-details').innerHTML = 
+                `<p style="color: red;">Error calculating route: ${e.error ? e.error.message : 'Could not find a route between these locations'}</p>`;
+        });
+
     } catch (error) {
+        console.error('Error in updateRoute:', error);
         document.querySelector('#route-info .route-details').innerHTML = 
             `<p style="color: red;">Error: ${error.message}</p>`;
     }
