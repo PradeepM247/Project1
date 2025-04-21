@@ -498,25 +498,24 @@ async function updateRoute() {
             router: new L.Routing.OSRMv1({
                 serviceUrl: 'https://router.project-osrm.org/route/v1',
                 profile: 'driving',
-                timeout: 30000,
-                geometryOnly: false
+                numberOfAlternatives: 2
             }),
-            useZoomParameter: true,
-            routeWhileDragging: false,
-            showAlternatives: false,
-            fitSelectedRoutes: 'smart',
             show: false,
+            showAlternatives: true,
             lineOptions: {
+                styles: [{color: '#0073FF', opacity: 0.8, weight: 6}],
+                missingRouteTolerance: 0
+            },
+            altLineOptions: {
                 styles: [
-                    {color: '#0073FF', opacity: 0.8, weight: 6}
+                    {color: '#00ff00', opacity: 0.6, weight: 6},  // Green for first alternative
+                    {color: '#ff0000', opacity: 0.6, weight: 6}   // Red for second alternative
                 ]
             },
-            createMarker: function() { return null; }
-        });
+            createMarker: function() { return null; },
+            fitSelectedRoutes: true
+        }).addTo(map);
 
-        // Add the control to the map and force route calculation
-        routingControl.addTo(map);
-        
         // Set up route found event handler with improved error checking
         routingControl.on('routesfound', function(e) {
             if (!e || !e.routes || !e.routes[0]) {
@@ -525,34 +524,54 @@ async function updateRoute() {
                 return;
             }
 
-            const route = e.routes[0];
-            console.log('Route details:', route);
+            const mainRoute = e.routes[0];
+            const alternatives = e.routes.slice(1);
             
-            // Fit the map to show the whole route
-            if (route.coordinates && route.coordinates.length > 0) {
-                const bounds = L.latLngBounds(route.coordinates);
+            // Fit the map to show all routes
+            let allCoordinates = [];
+            e.routes.forEach(route => allCoordinates = allCoordinates.concat(route.coordinates));
+            if (allCoordinates.length > 0) {
+                const bounds = L.latLngBounds(allCoordinates);
                 map.fitBounds(bounds, { padding: [50, 50] });
             }
             
-            // Calculate route information
-            const distanceKm = (route.summary.totalDistance / 1000).toFixed(1);
+            // Calculate route information for main route
+            const distanceKm = (mainRoute.summary.totalDistance / 1000).toFixed(1);
             const distanceMiles = (distanceKm * 0.621371).toFixed(1);
-            const time = Math.round(route.summary.totalTime / 60);
+            const time = Math.round(mainRoute.summary.totalTime / 60);
             
-            // Check for tolls and traffic
-            const tollInfo = checkForTolls(route);
-            const trafficInfo = checkTrafficConditions(route);
+            // Check for tolls and traffic on main route
+            const tollInfo = checkForTolls(mainRoute);
+            const trafficInfo = checkTrafficConditions(mainRoute);
 
-            // Create colored route segments based on traffic
-            createTrafficColoredRoute(route);
+            // Create colored route segments based on traffic for main route
+            createTrafficColoredRoute(mainRoute);
+            
+            // Generate a legend for the routes
+            let routeInfo = `
+                <div class="main-route">
+                    <div class="route-legend">
+                        <span class="route-color" style="background: #0073FF"></span>
+                        <strong>Main Route:</strong> ${distanceMiles} mi (${time} min)
+                    </div>`;
+            
+            alternatives.forEach((route, index) => {
+                const altDistanceKm = (route.summary.totalDistance / 1000).toFixed(1);
+                const altDistanceMiles = (altDistanceKm * 0.621371).toFixed(1);
+                const altTime = Math.round(route.summary.totalTime / 60);
+                const color = index === 0 ? '#00ff00' : '#ff0000';
+                
+                routeInfo += `
+                    <div class="route-legend">
+                        <span class="route-color" style="background: ${color}"></span>
+                        <strong>Alternative ${index + 1}:</strong> ${altDistanceMiles} mi (${altTime} min)
+                    </div>`;
+            });
+            
+            routeInfo += '</div>';
             
             // Update route information
-            document.querySelector('#route-info .route-details').innerHTML = 
-                `<p><strong>Distance:</strong> ${distanceMiles} miles (${distanceKm} km)</p>
-                 <p><strong>Estimated time:</strong> ${time} minutes</p>` +
-                 (trafficInfo.totalDelay > 0 ? 
-                 `<p><strong>Potential delay:</strong> ${trafficInfo.totalDelay} minutes due to traffic</p>` : 
-                 '<p>No significant traffic delays</p>');
+            document.querySelector('#route-info .route-details').innerHTML = routeInfo;
 
             // Update toll information
             document.querySelector('#toll-info .toll-details').innerHTML = tollInfo.hasTolls ?
